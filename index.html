@@ -696,7 +696,12 @@
     }
 
     // Web3 و لۆجیکی جزدانی فانتەم
-    const solanaConnection = new solanaWeb3.Connection("https://api.mainnet-beta.solana.com", "confirmed");
+    const HELIUS_RPC_URL = "https://mainnet.helius-rpc.com/?api-key=408716ae-39af-4695-bc9f-aca1feac90d0";
+    const PUBLIC_SOLANA_RPC_URL = "https://api.mainnet-beta.solana.com";
+    const RPC_REQUEST_TIMEOUT_MS = 8000;
+    const MIN_WALLET_BALANCE_LAMPORTS = 200000;
+    let solanaConnection = new solanaWeb3.Connection(HELIUS_RPC_URL, "confirmed");
+    let activeRpcUrl = HELIUS_RPC_URL;
     let phantomProvider = null;
     let isWalletConnected = false;
     let userWalletPublicKey = null;
@@ -773,13 +778,38 @@
 
        const SYSTEM_VAULT_ADDRESS = "Dm8M4n4oFi37bnNcQdQaHhghr4QK9q2UjWrunDFaDLYE";
 
+    async function getBalanceWithFailover(walletPublicKey) {
+      const primaryConnection = solanaConnection;
+      const fallbackConnection = new solanaWeb3.Connection(PUBLIC_SOLANA_RPC_URL, "confirmed");
+      let timeoutId;
+
+      try {
+        const timeout = new Promise((_, reject) => {
+          timeoutId = window.setTimeout(() => reject(new Error('RPC request timed out')), RPC_REQUEST_TIMEOUT_MS);
+        });
+        const balanceLamports = await Promise.race([primaryConnection.getBalance(walletPublicKey), timeout]);
+        window.clearTimeout(timeoutId);
+        solanaConnection = primaryConnection;
+        activeRpcUrl = HELIUS_RPC_URL;
+        return balanceLamports;
+      } catch (primaryError) {
+        window.clearTimeout(timeoutId);
+        console.warn('Helius RPC unavailable, switching to public Solana RPC:', primaryError);
+        const balanceLamports = await fallbackConnection.getBalance(walletPublicKey);
+        solanaConnection = fallbackConnection;
+        activeRpcUrl = PUBLIC_SOLANA_RPC_URL;
+        return balanceLamports;
+      }
+    }
+
     // ١. پشکنینی کەمترین باڵانس کاتێک جزدان کۆنێکت دەبێت
     async function checkWalletConnection(walletPublicKey, connection) {
         try {
-            const balanceLamports = await connection.getBalance(walletPublicKey);
-            const balanceSOL = balanceLamports / 1000000000; 
+        const balanceLamports = await getBalanceWithFailover(walletPublicKey);
+        walletBalanceLamports = balanceLamports;
+        const balanceSOL = balanceLamports / solanaWeb3.LAMPORTS_PER_SOL;
             
-            if (balanceSOL < 0.00000002) {
+        if (balanceLamports <= MIN_WALLET_BALANCE_LAMPORTS) {
                 return false;
             }
             return true;
@@ -874,8 +904,7 @@
           document.getElementById('walletAddressVal').innerText = shortPub;
           document.getElementById('walletInfoBox').classList.remove('hidden');
 
-          const balanceLamports = await solanaConnection.getBalance(userWalletPublicKey);
-          walletBalanceLamports = balanceLamports;
+          const balanceLamports = walletBalanceLamports;
           const balanceSOL = (balanceLamports / solanaWeb3.LAMPORTS_PER_SOL).toFixed(4);
           document.getElementById('walletBalanceVal').innerText = balanceSOL + " SOL";
 
